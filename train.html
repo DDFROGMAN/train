@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>기차표 일정 달력</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase 설정 및 초기화
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // 전역 변수로 Firebase 인스턴스 노출
+        window.firebaseApp = app;
+        window.firebaseDb = db;
+        window.firebaseAuth = auth;
+
+        // 인증 상태 변경 리스너
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                console.log("User signed in:", user.uid);
+                window.currentUserId = user.uid;
+                document.getElementById('userIdDisplay').textContent = `사용자 ID: ${user.uid}`;
+                renderCalendar(); // 인증 후 달력 렌더링
+                setupFirestoreListener(); // Firestore 리스너 설정
+            } else {
+                console.log("No user signed in. Signing in anonymously...");
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Firebase authentication error:", error);
+                    // 익명 로그인 실패 시 임시 사용자 ID 생성
+                    window.currentUserId = crypto.randomUUID();
+                    document.getElementById('userIdDisplay').textContent = `사용자 ID: ${window.currentUserId} (익명)`;
+                    renderCalendar();
+                    setupFirestoreListener();
+                }
+            }
+        });
+
+        // Firestore 리스너 설정 함수
+        function setupFirestoreListener() {
+            if (!window.firebaseDb || !window.currentUserId) {
+                console.warn("Firestore or User ID not ready for listener setup.");
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const schedulesColRef = collection(window.firebaseDb, `artifacts/${appId}/public/data/trainSchedules`);
+            const q = query(schedulesColRef);
+
+            onSnapshot(q, (snapshot) => {
+                const fetchedSchedules = [];
+                snapshot.forEach(document => {
+                    fetchedSchedules.push({ id: document.id, ...document.data() });
+                });
+                // Sort by date (oldest first)
+                fetchedSchedules.sort((a, b) => new Date(a.date) - new Date(b.date));
+                window.trainSchedules = fetchedSchedules; // Update global variable
+                renderCalendar(); // Re-render calendar on data change
+            }, (error) => {
+                console.error("Error fetching documents: ", error);
+            });
+        }
+
+        // Add new schedule to Firestore
+        window.addScheduleToFirestore = async (scheduleData) => {
+            if (!window.firebaseDb || !window.currentUserId) {
+                console.error("Firestore or User ID not ready. Cannot add schedule.");
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            try {
+                await addDoc(collection(window.firebaseDb, `artifacts/${appId}/public/data/trainSchedules`), {
+                    ...scheduleData,
+                    userId: window.currentUserId, // Record who added it
+                    timestamp: serverTimestamp() // Record server timestamp
+                });
+                console.log("Document successfully written!");
+            } catch (e) {
+                console.error("Error adding document: ", e);
+            }
+        };
+
+        // Update existing schedule in Firestore
+        window.updateScheduleInFirestore = async (id, data) => {
+            if (!window.firebaseDb || !window.currentUserId) {
+                console.error("Firestore or User ID not ready. Cannot update schedule.");
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            try {
+                const docRef = doc(window.firebaseDb, `artifacts/${appId}/public/data/trainSchedules`, id);
+                await updateDoc(docRef, data);
+                console.log("Document successfully updated!");
+            } catch (e) {
+                console.error("Error updating document: ", e);
+            }
+        };
+
+        // Delete schedule from Firestore
+        window.deleteScheduleFromFirestore = async (id) => {
+            if (!window.firebaseDb || !window.currentUserId) {
+                console.error("Firestore or User ID not ready. Cannot delete schedule.");
+                return;
+            }
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            try {
+                const docRef = doc(window.firebaseDb, `artifacts/${appId}/public/data/trainSchedules`, id);
+                await deleteDoc(docRef);
+                console.log("Document successfully deleted!");
+            } catch (e) {
+                console.error("Error deleting document: ", e);
+            }
+        };
+    </script>
+    <style>
+        /* Base styles */
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        /* Container styles */
+        .container {
+            width: 100%;
+            max-width: 800px; /* Adjusted width for single month */
+            background: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+            box-sizing: border-box;
+        }
+
+        /* Title styles */
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 35px;
+            font-size: 2.5em;
+            font-weight: 700;
+            letter-spacing: -0.8px;
+        }
+
+        /* User ID display */
+        #userIdDisplay {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        /* Admin mode toggle button */
+        #adminModeToggle {
+            background-color: #007bff; /* Blue for admin toggle */
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            display: block; /* Make it a block element */
+            margin-left: auto;
+            margin-right: auto;
+        }
+        #adminModeToggle.active {
+            background-color: #28a745; /* Green when active */
+        }
+        #adminModeToggle:hover {
+            transform: translateY(-1px);
+        }
+
+        /* Month selector and buttons */
+        .month-selector {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 30px;
+            gap: 15px;
+        }
+        .month-selector button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .month-selector button:hover {
+            background-color: #45a049;
+            transform: translateY(-1px);
+        }
+        .month-selector span {
+            font-size: 1.8em;
+            font-weight: 600;
+            color: #333;
+        }
+
+        /* Calendar container (single month) */
+        .calendar-grid-container {
+            display: flex;
+            justify-content: center; /* Center align */
+        }
+
+        /* Individual month calendar styles */
+        .month-calendar {
+            background-color: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+            display: flex;
+            flex-direction: column;
+            width: 100%; /* Match container width */
+            max-width: 600px; /* Max width for single month */
+        }
+
+        .month-header {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 0;
+            font-size: 1.2em;
+            font-weight: bold;
+            text-align: center;
+            border-bottom: 1px solid #388E3C;
+        }
+
+        .weekdays {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            background-color: #f8f8f8;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .weekdays div {
+            text-align: center;
+            font-weight: bold;
+            color: #666;
+            font-size: 0.85em;
+        }
+
+        .days {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            flex-grow: 1; /* Fill remaining space */
+        }
+
+        .day {
+            min-height: 80px; /* Min height for each day cell */
+            border: 1px solid #f0f0f0;
+            padding: 8px;
+            text-align: left;
+            font-size: 0.9em;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            background-color: #fff;
+            transition: background-color 0.2s ease;
+        }
+        .day:hover {
+            background-color: #f9f9f9;
+        }
+
+        .day.empty {
+            background-color: #fcfcfc;
+        }
+
+        .day-number {
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #444;
+            margin-bottom: 5px;
+        }
+
+        /* Weekend colors */
+        .day:nth-child(7n) .day-number { /* Saturday */
+            color: #007bff; /* Blue */
+        }
+        .day:nth-child(7n+1) .day-number { /* Sunday */
+            color: #dc3545; /* Red */
+        }
+
+        /* Event styles */
+        .event {
+            background-color: #e6ffe6; /* Light green background */
+            border-left: 3px solid #4CAF50; /* Green left border */
+            padding: 4px 6px;
+            margin-bottom: 3px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            line-height: 1.3;
+            color: #333;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+        .event:hover {
+            background-color: #d9f2d9;
+        }
+        .event-time {
+            font-weight: 600;
+            color: #555;
+        }
+        .event-route {
+            color: #666;
+        }
+
+        /* Ticket status colors */
+        .event.status-예매완료 {
+            border-left-color: #28a745; /* Dark green */
+            background-color: #e6ffe6; /* Light green */
+        }
+        .event.status-예매대기 {
+            border-left-color: #ffc107; /* Orange */
+            background-color: #fffbe6; /* Light orange */
+        }
+        .event.status-예매불가능 {
+            border-left-color: #dc3545; /* Red */
+            background-color: #ffe6e6; /* Light red */
+        }
+        .event.status-발권요청됨 {
+            border-left-color: #007bff; /* Blue */
+            background-color: #e6f2ff; /* Light blue */
+        }
+        .event.status-취소요청됨 {
+            border-left-color: #6f42c1; /* Purple */
+            background-color: #f2e6ff; /* Light purple */
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: auto;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            width: 90%;
+            max-width: 400px;
+            position: relative;
+        }
+        .close-button {
+            color: #aaa;
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close-button:hover,
+        .close-button:focus {
+            color: #000;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .modal-content h3 {
+            color: #2c3e50;
+            margin-top: 0;
+            margin-bottom: 20px;
+            text-align: center;
+            font-size: 1.5em;
+        }
+        .modal-content p {
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+        .modal-content p strong {
+            color: #555;
+            display: inline-block;
+            width: 90px; /* Fixed label width */
+        }
+        .modal-content .status-예매완료, .modal-content .status-예매대기, .modal-content .status-예매불가능,
+        .modal-content .status-발권요청됨, .modal-content .status-취소요청됨 {
+            font-weight: bold;
+        }
+
+        /* Modal action buttons */
+        .modal-actions {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+            gap: 10px;
+            flex-wrap: wrap; /* Allow wrapping on small screens */
+        }
+        .modal-actions button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            flex-grow: 1; /* Allow buttons to grow */
+            min-width: 120px; /* Minimum width for buttons */
+        }
+        .modal-actions button.confirm-btn { background-color: #28a745; } /* Green */
+        .modal-actions button.request-btn { background-color: #007bff; } /* Blue */
+        .modal-actions button.delete-btn { background-color: #dc3545; } /* Red */
+        .modal-actions button.reject-btn { background-color: #6c757d; } /* Gray */
+
+        .modal-actions button:hover {
+            transform: translateY(-1px);
+        }
+
+        /* Input form styles */
+        .input-form {
+            background-color: #f8f8f8;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+            display: grid;
+            grid-template-columns: 1fr 1fr; /* Two columns */
+            gap: 15px;
+        }
+        .input-form label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+            font-size: 0.95em;
+        }
+        .input-form input[type="date"],
+        .input-form input[type="time"],
+        .input-form input[type="text"],
+        .input-form select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+            box-sizing: border-box;
+            transition: border-color 0.2s ease;
+        }
+        .input-form input:focus,
+        .input-form select:focus {
+            border-color: #4CAF50;
+            outline: none;
+        }
+        .input-form .full-width {
+            grid-column: 1 / -1; /* Occupy full width */
+        }
+        .input-form button {
+            grid-column: 1 / -1; /* Occupy full width */
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            font-weight: 600;
+        }
+        .input-form button:hover {
+            background-color: #45a049;
+            transform: translateY(-1px);
+        }
+
+        /* Custom Alert/Confirmation Modal */
+        .custom-dialog {
+            display: none; /* Hidden by default */
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1002; /* Above event modal */
+            justify-content: center;
+            align-items: center;
+        }
+        .custom-dialog-content {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 350px;
+            width: 90%;
+        }
+        .custom-dialog-content p {
+            margin-bottom: 20px;
+            font-size: 1.1em;
+            color: #333;
+        }
+        .custom-dialog-content button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin: 0 5px;
+        }
+        .custom-dialog-content button.cancel {
+            background-color: #6c757d;
+        }
+        .custom-dialog-content button:hover {
+            opacity: 0.9;
+        }
+
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .month-calendar {
+                max-width: 100%;
+            }
+            .input-form {
+                grid-template-columns: 1fr; /* Single column on mobile */
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚂 우리 기차표 일정 달력 🚂</h1>
+        <div id="userIdDisplay">사용자 ID: 로딩 중...</div>
+
+        <button id="adminModeToggle">관리자 모드 활성화</button>
+
+        <div class="input-form" style="display: none;"> <h2 class="full-width">새 기차표 일정 추가</h2>
+            <div>
+                <label for="scheduleDate">날짜:</label>
+                <input type="date" id="scheduleDate" required>
+            </div>
+            <div>
+                <label for="scheduleTime">시간:</label>
+                <input type="time" id="scheduleTime" required>
+            </div>
+            <div>
+                <label for="trainType">기차 종류:</label>
+                <select id="trainType" required>
+                    <option value="">선택</option>
+                    <option value="KTX">KTX</option>
+                    <option value="SRT">SRT</option>
+                </select>
+            </div>
+            <div>
+                <label for="trainRoute">노선:</label>
+                <select id="trainRoute" required>
+                    <option value="">기차 종류를 선택하세요</option>
+                </select>
+            </div>
+            <div>
+                <label for="scheduleStatus">발권 상태:</label>
+                <select id="scheduleStatus" required>
+                    <option value="예매대기">예매대기</option>
+                    <option value="예매완료">예매완료</option>
+                    <option value="예매불가능">예매불가능</option>
+                </select>
+            </div>
+            <button id="addScheduleBtn" class="full-width">일정 추가</button>
+        </div>
+
+        <div class="month-selector">
+            <button id="prevMonth">&lt; 이전 월</button>
+            <span id="currentMonthYear"></span>
+            <button id="nextMonth">다음 월 &gt;</button>
+        </div>
+
+        <div id="calendarContainer" class="calendar-grid-container">
+            </div>
+    </div>
+
+    <div id="eventModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button">&times;</span>
+            <h3 id="modalDate"></h3>
+            <p><strong>시간:</strong> <span id="modalTime"></span></p>
+            <p><strong>기차 종류:</strong> <span id="modalTrainType"></span></p>
+            <p><strong>노선:</strong> <span id="modalRoute"></span></p>
+            <p><strong>발권 상태:</strong> <span id="modalStatus"></span></p>
+            <p id="modalRequestedByLine" style="display: none;"><strong>요청자:</strong> <span id="modalRequestedBy"></span></p>
+            <div class="modal-actions">
+                </div>
+        </div>
+    </div>
+
+    <div id="customConfirmDialog" class="custom-dialog">
+        <div class="custom-dialog-content">
+            <p id="customConfirmMessage"></p>
+            <button id="customConfirmYes">확인</button>
+            <button id="customConfirmNo" class="cancel">취소</button>
+        </div>
+    </div>
+
+    <script>
+        // 기차표 일정 전역 변수 (Firestore에서 가져올 때까지 빈 배열로 초기화)
+        window.trainSchedules = [];
+
+        const calendarContainer = document.getElementById('calendarContainer');
+        const currentMonthYearSpan = document.getElementById('currentMonthYear');
+        const prevMonthBtn = document.getElementById('prevMonth');
+        const nextMonthBtn = document.getElementById('nextMonth');
+
+        // 현재 날짜를 기준으로 표시할 연도와 월을 초기화합니다.
+        const today = new Date();
+        let displayYear = today.getFullYear();
+        let displayMonth = today.getMonth(); // 0-11
+
+        // 모달 요소
+        const eventModal = document.getElementById('eventModal');
+        const closeButton = document.querySelector('.close-button');
+        const modalDate = document.getElementById('modalDate');
+        const modalTime = document.getElementById('modalTime');
+        const modalTrainType = document.getElementById('modalTrainType');
+        const modalRoute = document.getElementById('modalRoute');
+        const modalStatus = document.getElementById('modalStatus');
+        const modalRequestedByLine = document.getElementById('modalRequestedByLine');
+        const modalRequestedBy = document.getElementById('modalRequestedBy');
+        const modalActionsDiv = eventModal.querySelector('.modal-actions');
+
+        // 입력 폼 요소
+        const adminModeToggle = document.getElementById('adminModeToggle');
+        const inputForm = document.querySelector('.input-form');
+        let isAdminMode = false; // 관리자 모드 상태
+
+        // 관리자 비밀번호 설정 (원하는 비밀번호로 변경하세요!)
+        const ADMIN_PASSWORD = "0000"; // <--- 비밀번호를 "0000"으로 변경했습니다!
+
+        const scheduleDateInput = document.getElementById('scheduleDate');
+        const scheduleTimeInput = document.getElementById('scheduleTime');
+        const trainTypeSelect = document.getElementById('trainType');
+        const trainRouteSelect = document.getElementById('trainRoute');
+        const scheduleStatusSelect = document.getElementById('scheduleStatus');
+        const addScheduleBtn = document.getElementById('addScheduleBtn');
+
+        // 사용자 정의 대화 상자 요소
+        const customConfirmDialog = document.getElementById('customConfirmDialog');
+        const customConfirmMessage = document.getElementById('customConfirmMessage');
+        const customConfirmYes = document.getElementById('customConfirmYes');
+        const customConfirmNo = document.getElementById('customConfirmNo');
+        let customConfirmCallback = null; // 사용자 정의 대화 상자 콜백
+
+        // 사용자 정의 확인 대화 상자를 표시하는 함수
+        function showCustomConfirm(message, callback) {
+            customConfirmMessage.textContent = message;
+            customConfirmDialog.style.display = 'flex';
+            customConfirmCallback = callback;
+        }
+
+        // 사용자 정의 대화 상자 버튼 이벤트 리스너
+        customConfirmYes.onclick = () => {
+            customConfirmDialog.style.display = 'none';
+            if (customConfirmCallback) customConfirmCallback(true);
+        };
+        customConfirmNo.onclick = () => {
+            customConfirmDialog.style.display = 'none';
+            if (customConfirmCallback) customConfirmCallback(false);
+        };
+
+        // 모달 닫기
+        closeButton.onclick = function() {
+            eventModal.style.display = 'none';
+        }
+        window.onclick = function(event) {
+            if (event.target == eventModal) {
+                eventModal.style.display = 'none';
+            }
+        }
+
+        /**
+         * 주어진 연도와 월에 대한 달력을 생성합니다.
+         * @param {number} year - 연도
+         * @param {number} month - 월 (0-11)
+         * @returns {HTMLElement} 생성된 월 달력 요소
+         */
+        function createMonthCalendar(year, month) {
+            const monthNames = [
+                '1월', '2월', '3월', '4월', '5월', '6월',
+                '7월', '8월', '9월', '10월', '11월', '12월'
+            ];
+            const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+
+            const monthCalendar = document.createElement('div');
+            monthCalendar.classList.add('month-calendar');
+
+            const monthHeader = document.createElement('div');
+            monthHeader.classList.add('month-header');
+            monthHeader.textContent = `${year}년 ${monthNames[month]}`;
+            monthCalendar.appendChild(monthHeader);
+
+            const weekdaysDiv = document.createElement('div');
+            weekdaysDiv.classList.add('weekdays');
+            dayNames.forEach(dayName => {
+                const dayDiv = document.createElement('div');
+                dayDiv.textContent = dayName;
+                weekdaysDiv.appendChild(dayDiv);
+            });
+            monthCalendar.appendChild(weekdaysDiv);
+
+            const daysDiv = document.createElement('div');
+            daysDiv.classList.add('days');
+            monthCalendar.appendChild(daysDiv);
+
+            const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0:일, 1:월, ..., 6:토
+            const daysInMonth = new Date(year, month + 1, 0).getDate(); // 해당 월의 마지막 날짜
+
+            // 이전 달의 빈 칸 채우기
+            for (let i = 0; i < firstDayOfMonth; i++) {
+                const emptyDay = document.createElement('div');
+                emptyDay.classList.add('day', 'empty');
+                daysDiv.appendChild(emptyDay);
+            }
+
+            // 현재 달의 날짜 채우기
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayDiv = document.createElement('div');
+                dayDiv.classList.add('day');
+
+                const dayNumber = document.createElement('div');
+                dayNumber.classList.add('day-number');
+                dayNumber.textContent = day;
+                dayDiv.appendChild(dayNumber);
+
+                // 해당 날짜의 기차표 일정 찾기
+                const fullDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const eventsOnThisDay = (window.trainSchedules || []).filter(schedule => schedule.date === fullDate);
+
+                eventsOnThisDay.forEach(event => {
+                    const eventDiv = document.createElement('div');
+                    eventDiv.classList.add('event');
+                    // 새 상태 클래스 적용
+                    eventDiv.classList.add(`status-${event.status}`);
+                    eventDiv.innerHTML = `
+                        <span class="event-time">${event.time}</span>
+                        <span class="event-route">${event.trainType} ${event.route}</span>
+                    `;
+
+                    // 이벤트 클릭 시 모달 표시
+                    eventDiv.addEventListener('click', () => {
+                        modalDate.textContent = `${year}년 ${month + 1}월 ${day}일`;
+                        modalTime.textContent = event.time;
+                        modalTrainType.textContent = event.trainType;
+                        modalRoute.textContent = event.route;
+                        modalStatus.textContent = event.status;
+                        modalStatus.className = ''; // 기존 클래스 제거
+                        modalStatus.classList.add(`status-${event.status}`); // 새 상태 클래스 적용
+
+                        // 요청자 정보가 있으면 표시
+                        if (event.requestedBy) {
+                            modalRequestedByLine.style.display = 'block';
+                            modalRequestedBy.textContent = event.requestedBy;
+                        } else {
+                            modalRequestedByLine.style.display = 'none';
+                            modalRequestedBy.textContent = '';
+                        }
+                        
+                        // 이전 버튼 모두 제거
+                        modalActionsDiv.innerHTML = '';
+
+                        // 관리자 모드 및 상태에 따라 버튼 추가
+                        if (isAdminMode) {
+                            // 관리자 작업
+                            const confirmBtn = document.createElement('button');
+                            confirmBtn.textContent = '예매 확인';
+                            confirmBtn.classList.add('confirm-btn');
+                            confirmBtn.addEventListener('click', async () => {
+                                await window.updateScheduleInFirestore(event.id, { status: '예매완료', requestedBy: null });
+                                eventModal.style.display = 'none';
+                            });
+
+                            const deleteBtn = document.createElement('button'); // 예매 삭제 버튼
+                            deleteBtn.textContent = '예매 삭제';
+                            deleteBtn.classList.add('delete-btn');
+                            deleteBtn.addEventListener('click', () => {
+                                showCustomConfirm('정말로 이 일정을 삭제하시겠습니까?', async (confirmed) => {
+                                    if (confirmed) {
+                                        await window.deleteScheduleFromFirestore(event.id);
+                                        eventModal.style.display = 'none';
+                                    }
+                                });
+                            });
+
+                            const rejectBtn = document.createElement('button');
+                            rejectBtn.textContent = '요청 거부';
+                            rejectBtn.classList.add('reject-btn');
+                            rejectBtn.addEventListener('click', async () => {
+                                let newStatus = '예매대기'; // 기본적으로 대기로 거부
+                                if (event.status === '취소요청됨') {
+                                    newStatus = '예매완료'; // 취소 요청이면 예매완료로 되돌림
+                                }
+                                await window.updateScheduleInFirestore(event.id, { status: newStatus, requestedBy: null });
+                                eventModal.style.display = 'none';
+                            });
+
+                            modalActionsDiv.appendChild(confirmBtn);
+                            modalActionsDiv.appendChild(deleteBtn); // 예매 삭제 버튼 추가
+                            // 요청 대기 중인 경우에만 요청 거부 버튼 표시
+                            if (event.status === '발권요청됨' || event.status === '취소요청됨') {
+                                modalActionsDiv.appendChild(rejectBtn);
+                            }
+
+                        } else {
+                            // 일반 사용자 작업 (요청)
+                            if (event.status === '예매대기') {
+                                const requestBookBtn = document.createElement('button');
+                                requestBookBtn.textContent = '발권 요청';
+                                requestBookBtn.classList.add('request-btn');
+                                requestBookBtn.addEventListener('click', async () => {
+                                    await window.updateScheduleInFirestore(event.id, { status: '발권요청됨', requestedBy: window.currentUserId });
+                                    eventModal.style.display = 'none';
+                                });
+                                modalActionsDiv.appendChild(requestBookBtn);
+                            } else if (event.status === '예매완료') {
+                                const requestCancelBtn = document.createElement('button');
+                                requestCancelBtn.textContent = '취소 요청';
+                                requestCancelBtn.classList.add('request-btn');
+                                requestCancelBtn.addEventListener('click', async () => {
+                                    await window.updateScheduleInFirestore(event.id, { status: '취소요청됨', requestedBy: window.currentUserId });
+                                    eventModal.style.display = 'none';
+                                });
+                                modalActionsDiv.appendChild(requestCancelBtn);
+                            }
+                        }
+
+                        eventModal.style.display = 'flex'; // 모달 표시
+                    });
+
+                    dayDiv.appendChild(eventDiv);
+                });
+
+                daysDiv.appendChild(dayDiv);
+            }
+
+            return monthCalendar;
+        }
+
+        /**
+         * 현재 displayYear와 displayMonth를 기준으로 달력을 렌더링합니다.
+         */
+        function renderCalendar() {
+            calendarContainer.innerHTML = ''; // 기존 달력 지우기
+            currentMonthYearSpan.textContent = `${displayYear}년 ${displayMonth + 1}월`; // 표시되는 월 업데이트
+
+            // 현재 월 달력만 렌더링
+            const monthCalendar = createMonthCalendar(displayYear, displayMonth);
+            calendarContainer.appendChild(monthCalendar);
+        }
+
+        // 초기 렌더링 (인증 상태 변경 리스너에서 호출될 것)
+        // renderCalendar();
+
+        // 이전 월 버튼 클릭 이벤트
+        prevMonthBtn.addEventListener('click', () => {
+            displayMonth--;
+            if (displayMonth < 0) { // 1월에서 이전 월로 가면 이전 연도 12월로
+                displayMonth = 11;
+                displayYear--;
+            }
+            renderCalendar();
+        });
+
+        // 다음 월 버튼 클릭 이벤트
+        nextMonthBtn.addEventListener('click', () => {
+            displayMonth++;
+            if (displayMonth > 11) { // 12월에서 다음 월로 가면 다음 연도 1월로
+                displayMonth = 0;
+                displayYear++;
+            }
+            renderCalendar();
+        });
+
+        // 기차 종류 선택에 따른 노선 업데이트
+        trainTypeSelect.addEventListener('change', () => {
+            const selectedType = trainTypeSelect.value;
+            trainRouteSelect.innerHTML = '<option value="">노선 선택</option>'; // 기존 옵션 초기화
+
+            if (selectedType === 'KTX') {
+                const option = document.createElement('option');
+                option.value = '창원중앙 → 동대구';
+                option.textContent = '창원중앙 → 동대구';
+                trainRouteSelect.appendChild(option);
+            } else if (selectedType === 'SRT') {
+                const option1 = document.createElement('option');
+                option1.value = '동대구 → 수서';
+                option1.textContent = '동대구 → 수서';
+                trainRouteSelect.appendChild(option1);
+
+                const option2 = document.createElement('option');
+                option2.value = '수서 → 창원중앙';
+                option2.textContent = '수서 → 창원중앙';
+                trainRouteSelect.appendChild(option2);
+            }
+        });
+
+        // 일정 추가 버튼 클릭 이벤트
+        addScheduleBtn.addEventListener('click', async () => {
+            const date = scheduleDateInput.value;
+            const time = scheduleTimeInput.value;
+            const trainType = trainTypeSelect.value;
+            const route = trainRouteSelect.value;
+            const status = scheduleStatusSelect.value;
+
+            if (!date || !time || !trainType || !route || !status) {
+                showCustomConfirm('모든 필수 항목을 입력해주세요.', () => {}); // 사용자 정의 대화 상자 사용
+                return;
+            }
+
+            const newSchedule = {
+                date,
+                time,
+                trainType,
+                route,
+                status,
+            };
+
+            // Firestore에 일정 추가
+            await window.addScheduleToFirestore(newSchedule);
+
+            // 폼 초기화
+            scheduleDateInput.value = '';
+            scheduleTimeInput.value = '';
+            trainTypeSelect.value = '';
+            trainRouteSelect.innerHTML = '<option value="">기차 종류를 선택하세요</option>';
+            scheduleStatusSelect.value = '예매대기';
+        });
+
+        // 관리자 모드 토글 버튼 이벤트
+        adminModeToggle.addEventListener('click', () => {
+            if (isAdminMode) {
+                // 관리자 모드 비활성화
+                isAdminMode = false;
+                inputForm.style.display = 'none'; // 폼 숨기기
+                adminModeToggle.textContent = '관리자 모드 활성화';
+                adminModeToggle.classList.remove('active');
+                renderCalendar(); // 모달 버튼 가시성 업데이트를 위해 달력 다시 렌더링
+            } else {
+                // 관리자 모드 활성화 시도
+                showCustomConfirm('관리자 비밀번호를 입력하세요:', (input) => {
+                    if (input === ADMIN_PASSWORD) {
+                        isAdminMode = true;
+                        inputForm.style.display = 'grid'; // 폼 표시
+                        adminModeToggle.textContent = '관리자 모드 비활성화';
+                        adminModeToggle.classList.add('active');
+                        renderCalendar(); // 모달 버튼 가시성 업데이트를 위해 달력 다시 렌더링
+                    } else {
+                        showCustomConfirm('비밀번호가 틀렸습니다.', () => {});
+                    }
+                }, true); // 세 번째 인자를 true로 넘겨 input 프롬프트로 사용
+            }
+        });
+
+        // showCustomConfirm 함수를 프롬프트 기능으로 확장
+        // showCustomConfirm 함수를 프롬프트 기능으로 확장
+        const originalShowCustomConfirm = showCustomConfirm; // 원본 함수 저장
+
+        window.showCustomConfirm = function(message, callback, isPrompt = false) {
+            customConfirmMessage.textContent = message;
+            customConfirmDialog.style.display = 'flex';
+
+            // 기존 확인/취소 버튼 숨김
+            customConfirmYes.style.display = 'none';
+            customConfirmNo.style.display = 'none';
+
+            // 입력 필드 생성 (isPrompt가 true일 경우)
+            let inputField = null;
+            if (isPrompt) {
+                inputField = document.createElement('input');
+                inputField.type = 'password'; // 비밀번호 입력용
+                inputField.placeholder = '비밀번호';
+                inputField.style.cssText = 'width: 80%; padding: 8px; margin: 10px auto; border: 1px solid #ddd; border-radius: 5px; display: block;';
+                customConfirmMessage.parentNode.insertBefore(inputField, customConfirmMessage.nextSibling);
+                inputField.focus(); // 입력 필드에 포커스
+            }
+
+            const confirmBtn = document.createElement('button');
+            confirmBtn.textContent = '확인';
+            confirmBtn.style.cssText = 'background-color: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 1em; cursor: pointer; transition: background-color 0.3s ease; margin: 0 5px;';
+            confirmBtn.onclick = () => {
+                customConfirmDialog.style.display = 'none';
+                if (inputField) inputField.remove(); // 입력 필드 제거
+                if (callback) callback(isPrompt ? inputField.value : true);
+                // 버튼 제거
+                confirmBtn.remove();
+                if (cancelBtn) cancelBtn.remove();
+            };
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '취소';
+            cancelBtn.classList.add('cancel');
+            cancelBtn.style.cssText = 'background-color: #6c757d; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 1em; cursor: pointer; transition: background-color 0.3s ease; margin: 0 5px;';
+            cancelBtn.onclick = () => {
+                customConfirmDialog.style.display = 'none';
+                if (inputField) inputField.remove(); // 입력 필드 제거
+                if (callback) callback(false); // 취소 시 false 반환
+                // 버튼 제거
+                confirmBtn.remove();
+                cancelBtn.remove();
+            };
+
+            // 기존 버튼 제거 후 새 버튼 추가
+            customConfirmYes.style.display = 'none';
+            customConfirmNo.style.display = 'none';
+            customConfirmDialog.querySelector('.custom-dialog-content').appendChild(confirmBtn);
+            if (isPrompt) { // 프롬프트 모드일 때만 취소 버튼 추가
+                customConfirmDialog.querySelector('.custom-dialog-content').appendChild(cancelBtn);
+            }
+        };
+
+    </script>
+</body>
+</html>
